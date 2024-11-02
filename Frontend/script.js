@@ -8,11 +8,15 @@ let destination;
 let userLocation;
 let streetViewService;
 let streetViewPanorama;
+let journeyInterval;
+let trafficLayer;
+let transitLayer;
 
 function initMap() {
   map = new google.maps.Map(document.getElementById("map"), {
     center: { lat: 37.7749, lng: -122.4194 }, // Default center in case geolocation fails
     zoom: 13,
+    streetViewControl: true, // Enable Street View control
   });
 
   marker = new google.maps.Marker({ map: map });
@@ -56,6 +60,10 @@ function initMap() {
   streetViewService = new google.maps.StreetViewService();
   streetViewPanorama = new google.maps.StreetViewPanorama(document.getElementById("street-view"));
 
+  // Initialize traffic and transit layers
+  trafficLayer = new google.maps.TrafficLayer();
+  transitLayer = new google.maps.TransitLayer();
+
   // Get the user's live location and set it as the starting point
   getUserLocation();
 }
@@ -83,6 +91,7 @@ function getUserLocation() {
         });
 
         showNotification("Location found! Starting from your current position.");
+        displayCurrentLocationDetails();
       },
       () => {
         showNotification("Unable to retrieve your location. Please allow location access.");
@@ -102,40 +111,70 @@ function startJourney() {
   // Calculate initial route without detours
   calculateRoute(userLocation, destination);
 
-  // Start updating route with random detours
-  setInterval(() => updateRouteWithRandomDetour(), 30000); // Update every 30 seconds
+  // Start tracking user location and updating route with random detours
+  journeyInterval = setInterval(() => updateRouteWithRandomDetour(), 30000); // Update every 30 seconds
+  trackUserLocation();
+}
+
+function pauseJourney() {
+  if (journeyInterval) {
+    clearInterval(journeyInterval);
+    journeyInterval = null;
+    showNotification("Journey paused.");
+  }
+}
+
+function resetJourney() {
+  if (journeyInterval) {
+    clearInterval(journeyInterval);
+    journeyInterval = null;
+  }
+  directionsRenderer.set('directions', null);
+  if (userMarker) userMarker.setMap(null);
+  userLocation = null;
+  destination = null;
+  showNotification("Journey reset.");
+}
+
+function toggleTrafficLayer() {
+  if (trafficLayer.getMap()) {
+    trafficLayer.setMap(null);
+    showNotification("Traffic layer hidden.");
+  } else {
+    trafficLayer.setMap(map);
+    showNotification("Traffic layer shown.");
+  }
+}
+
+function toggleTransitLayer() {
+  if (transitLayer.getMap()) {
+    transitLayer.setMap(null);
+    showNotification("Transit layer hidden.");
+  } else {
+    transitLayer.setMap(map);
+    showNotification("Transit layer shown.");
+  }
 }
 
 function calculateRoute(origin, destination) {
-  const travelModes = [
-    google.maps.TravelMode.DRIVING,
-    google.maps.TravelMode.BICYCLING,
-    google.maps.TravelMode.TRANSIT,
-    google.maps.TravelMode.WALKING
-  ];
+  const request = {
+    origin: origin,
+    destination: destination,
+    travelMode: google.maps.TravelMode.DRIVING,
+    drivingOptions: {
+      departureTime: new Date(),
+      trafficModel: 'bestguess'
+    }
+  };
 
-  travelModes.forEach((mode) => {
-    const request = {
-      origin: origin,
-      destination: destination,
-      travelMode: mode,
-      drivingOptions: {
-        departureTime: new Date(),
-        trafficModel: 'bestguess'
-      }
-    };
-
-    directionsService.route(request, (result, status) => {
-      if (status === google.maps.DirectionsStatus.OK) {
-        if (mode === google.maps.TravelMode.DRIVING) {
-          directionsRenderer.setDirections(result);
-          colorRouteBasedOnTraffic(result);
-        }
-        displayRouteInfo(result, mode);
-      } else {
-        showNotification(`Failed to calculate route for ${mode}. Please try again.`);
-      }
-    });
+  directionsService.route(request, (result, status) => {
+    if (status === google.maps.DirectionsStatus.OK) {
+      directionsRenderer.setDirections(result);
+      colorRouteBasedOnTraffic(result);
+      displayRouteInfo(result, google.maps.TravelMode.DRIVING);
+    } else {
+      showNotification("Failed to calculate route. Please try again.");
+    }
   });
 }
 
@@ -164,7 +203,7 @@ function colorRouteBasedOnTraffic(result) {
 function updateRouteWithRandomDetour() {
   if (!userLocation || !destination) return;
 
-  const detour = generateRandomDetours(userLocation, destination)[0]; // Generate one random detour
+  const detour = generateRandomDetours(userLocation)[0]; // Generate one random detour
 
   const request = {
     origin: userLocation,
@@ -189,15 +228,17 @@ function updateRouteWithRandomDetour() {
   });
 }
 
-// Generate random detours between origin and destination
-function generateRandomDetours(origin, destination) {
+// Generate random detours near the current location (within 100 meters)
+function generateRandomDetours(currentLocation) {
   const detours = [];
-  const latDiff = destination.lat() - origin.lat;
-  const lngDiff = destination.lng() - origin.lng;
-  
+  const radius = 0.001; // Approx. 100 meters
+
   for (let i = 0; i < 3; i++) { // Three random detours
-    const detourLat = origin.lat + Math.random() * latDiff * 0.5 * (Math.random() < 0.5 ? -1 : 1);
-    const detourLng = origin.lng + Math.random() * lngDiff * 0.5 * (Math.random() < 0.5 ? -1 : 1);
+    const angle = Math.random() * 2 * Math.PI;
+    const dx = radius * Math.cos(angle);
+    const dy = radius * Math.sin(angle);
+    const detourLat = currentLocation.lat + dx;
+    const detourLng = currentLocation.lng + dy;
     detours.push({ lat: detourLat, lng: detourLng });
   }
 
@@ -214,6 +255,8 @@ function trackUserLocation() {
         };
         userMarker.setPosition(newLocation); // Update user marker position
         map.panTo(newLocation); // Center map on new position
+        userLocation = newLocation; // Update user location
+        displayCurrentLocationDetails();
       },
       (error) => {
         console.error("Error tracking location:", error);
@@ -270,6 +313,15 @@ function displayPlaceDetails(place) {
       }
     });
   }
+}
+
+function displayCurrentLocationDetails() {
+  const currentLocationContainer = document.getElementById("current-location-details");
+  currentLocationContainer.innerHTML = `
+    <h3>Current Location</h3>
+    <p>Latitude: ${userLocation.lat}</p>
+    <p>Longitude: ${userLocation.lng}</p>
+  `;
 }
 
 function showNotification(message) {
